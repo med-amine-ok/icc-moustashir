@@ -47,7 +47,8 @@ import {
   TrendingDown,
   ExternalLink,
   ChevronRight,
-  ShieldCheck
+  ShieldCheck,
+  Download
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -1117,7 +1118,57 @@ export default function CustomersPage() {
               </p>
             </div>
           </div>
+          
         )}
+        {/* Actions */}
+<div className="flex gap-2 pt-2 border-t border-[#DCE5EE]">
+  <button
+    onClick={() => {
+      const content = `
+FACTURE MOUSTACHIR
+==================
+Numéro : ${selectedInvoice.id}
+Date d'émission : ${selectedInvoice.dateIssued}
+Prestation : ${selectedInvoice.service}
+Montant : ${formatAlgerianDinar(selectedInvoice.amount)}
+Statut : ${selectedInvoice.status}
+==================
+Moustachir — moustachir.dz
+      `.trim();
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Facture-${selectedInvoice.id}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }}
+    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-[#17345C] text-white text-xs font-semibold rounded-lg hover:bg-[#1a4070] transition-colors"
+  >
+    <Download size={13} />
+    Télécharger PDF
+  </button>
+
+  <button
+    onClick={() => {
+      const subject = encodeURIComponent(`Facture Moustachir — ${selectedInvoice.id}`);
+      const body = encodeURIComponent(
+        `Bonjour,\n\nVeuillez trouver ci-dessous les détails de votre facture :\n\n` +
+        `Numéro : ${selectedInvoice.id}\n` +
+        `Date d'émission : ${selectedInvoice.dateIssued}\n` +
+        `Prestation : ${selectedInvoice.service}\n` +
+        `Montant : ${formatAlgerianDinar(selectedInvoice.amount)}\n` +
+        `Statut : ${selectedInvoice.status}\n\n` +
+        `Cordialement,\nL'équipe Moustachir\nmoustachir.dz`
+      );
+      window.open(`mailto:?subject=${subject}&body=${body}`);
+    }}
+    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-white border border-[#DCE5EE] text-[#17345C] text-xs font-semibold rounded-lg hover:bg-[#F5F8FB] transition-colors"
+  >
+    <Mail size={13} />
+    Envoyer par Mail
+  </button>
+</div>
       </Dialog>
 
       {/* 4b. Single Service Detail Modal */}
