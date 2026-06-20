@@ -218,6 +218,165 @@ const getRawFilteredProjects = (filters: GlobalFilters): SimProject[] => {
   });
 };
 
+// Helper to find reporting customer with fuzzy fallback on email/phone matching
+export const findReportingCustomer360 = (customerId: string): ReportingCustomer360 | undefined => {
+  const customer = dimCustomers.find(c => c.customer_id === customerId);
+  if (!customer) return undefined;
+
+  let match = reportingCustomer360.find(r => r.customer_id === customerId);
+  if (match) return match;
+
+  if (customer.email) {
+    const emailToMatch = customer.email.trim().toLowerCase();
+    match = reportingCustomer360.find(r => r.email && r.email.trim().toLowerCase() === emailToMatch);
+    if (match) return match;
+  }
+
+  if (customer.phone) {
+    const phoneToMatch = customer.phone.replace(/[\s-]/g, '');
+    match = reportingCustomer360.find(r => r.phone && r.phone.replace(/[\s-]/g, '') === phoneToMatch);
+    if (match) return match;
+  }
+
+  return undefined;
+};
+
+// Helper to determine customer status based on opportunity stages
+export const getCustomerStatus = (customerId: string): 'converted' | 'prospect' | 'lead' | 'lost' => {
+  const opps = factOpportunities.filter(o => o.customer_key === customerId);
+  if (opps.length === 0) {
+    const txs = simTransactions.filter(t => t.customer_id === customerId);
+    const hasPaid = txs.some(t => t.payment_status === 'paid');
+    return hasPaid ? 'converted' : 'lead';
+  }
+
+  const stages = opps.map(o => o.stage.toLowerCase());
+
+  if (stages.some(s => s === 'gagné' || s === 'won')) {
+    return 'converted';
+  }
+  if (stages.some(s => s === 'proposition' || s === 'proposal' || s === 'réunion' || s === 'meeting' || s === 'qualifié')) {
+    return 'prospect';
+  }
+  if (stages.some(s => s === 'lead' || s === 'contacted')) {
+    return 'lead';
+  }
+  if (stages.some(s => s === 'perdu' || s === 'lost')) {
+    return 'lost';
+  }
+  return 'lead';
+};
+
+// Helper to get real transactions or generate synthetic ones in MUST-2026-XXXX format
+export const getOrCreateTransactions = (customerId: string): SimTransaction[] => {
+  const realTxs = simTransactions.filter(t => t.customer_id === customerId);
+  if (realTxs.length > 0) {
+    return realTxs.map((t, idx) => {
+      const invoiceNumber = t.transaction_id.startsWith('MUST-2026-')
+        ? t.transaction_id
+        : `MUST-2026-${String(1000 + idx).slice(1)}`;
+      return {
+        ...t,
+        transaction_id: invoiceNumber
+      };
+    });
+  }
+
+  const wonOpps = factOpportunities.filter(o =>
+    o.customer_key === customerId &&
+    (o.stage === 'Gagné' || o.stage === 'Won' || o.is_converted)
+  );
+
+  if (wonOpps.length > 0) {
+    const syntheticTxs: SimTransaction[] = [];
+    wonOpps.forEach((opp) => {
+      const numInvoices = (opp.expected_revenue_da > 500000) ? 2 : 1;
+      const amounts = numInvoices === 1
+        ? [opp.expected_revenue_da]
+        : [Math.round(opp.expected_revenue_da * 0.4), opp.expected_revenue_da - Math.round(opp.expected_revenue_da * 0.4)];
+
+      const dateStr = dateKeyToString(opp.date_key) || '2026-01-15';
+      const baseDate = new Date(dateStr);
+
+      amounts.forEach((amt, invIdx) => {
+        const invDate = new Date(baseDate);
+        if (invIdx > 0) {
+          invDate.setDate(invDate.getDate() + 30);
+        }
+
+        const hashSeed = `${customerId}-${opp.opportunity_id}-${invIdx}`;
+        let hash = 0;
+        for (let charIdx = 0; charIdx < hashSeed.length; charIdx++) {
+          hash = (hash << 5) - hash + hashSeed.charCodeAt(charIdx);
+          hash |= 0;
+        }
+        const numericSuffix = String(Math.abs(hash) % 10000).padStart(4, '0');
+        const transaction_id = `MUST-2026-${numericSuffix}`;
+
+        syntheticTxs.push({
+          transaction_id,
+          opportunity_id: opp.opportunity_id,
+          customer_id: customerId,
+          service_id: opp.service_id,
+          amount_da: amt,
+          transaction_date: invDate.toISOString().split('T')[0],
+          payment_status: 'Payé'
+        });
+      });
+    });
+    return syntheticTxs;
+  }
+
+  return [];
+};
+
+export interface LtvResult {
+  value: number;
+  isEstimated: boolean;
+}
+
+// Calculate LTV using max(Won actual_revenue, Paid transactions)
+export const calculateCustomerLTV = (customerId: string): LtvResult => {
+  const wonOpps = factOpportunities.filter(o =>
+    o.customer_key === customerId &&
+    (o.stage === 'Gagné' || o.stage === 'Won' || o.is_converted)
+  );
+  const sumWonActualRevenue = wonOpps.reduce((sum, o) => sum + o.actual_revenue_da, 0);
+
+  const txs = getOrCreateTransactions(customerId);
+  const sumPaidTransactions = txs
+    .filter(t => t.payment_status.toLowerCase() === 'payé' || t.payment_status.toLowerCase() === 'paid')
+    .reduce((sum, t) => sum + t.amount_da, 0);
+
+  const maxValue = Math.max(sumWonActualRevenue, sumPaidTransactions);
+
+  if (maxValue > 0) {
+    return { value: maxValue, isEstimated: false };
+  }
+
+  const activeOpps = factOpportunities.filter(o =>
+    o.customer_key === customerId &&
+    !['Gagné', 'Won', 'Perdu', 'Lost'].includes(o.stage)
+  );
+
+  let estimatedValue = activeOpps.reduce((sum, o) => {
+    const prob = o.stage_probability !== undefined ? o.stage_probability : (STAGE_PROBABILITIES[o.stage] || 0.10);
+    return sum + (o.expected_revenue_da * prob);
+  }, 0);
+
+  if (estimatedValue === 0) {
+    const anyOpp = factOpportunities.filter(o => o.customer_key === customerId);
+    if (anyOpp.length > 0) {
+      estimatedValue = anyOpp.reduce((sum, o) => sum + o.expected_revenue_da, 0) * 0.1;
+    }
+  }
+
+  return {
+    value: Math.round(estimatedValue),
+    isEstimated: true
+  };
+};
+
 // Main Data Filter and Aggregator Service
 export const DataService = {
   // Get filtered opportunities (mapped to UI Opportunity type)
@@ -275,7 +434,9 @@ export const DataService = {
   getFilteredCustomers: (filters: GlobalFilters): Customer[] => {
     const raw = getRawFilteredCustomers(filters);
     return raw.map(c => {
-      const c360 = reportingCustomer360.find(r => r.customer_id === c.customer_id);
+      const c360 = findReportingCustomer360(c.customer_id);
+      const ltvResult = calculateCustomerLTV(c.customer_id);
+      const status = getCustomerStatus(c.customer_id);
       return {
         id: c.customer_id,
         name: c.name,
@@ -286,7 +447,9 @@ export const DataService = {
         contactPhone: c.phone,
         healthScore: getCustomerHealthScore(c.customer_id, c.workshops_attended),
         cac: c360 ? c360.customer_cac_da : 25000,
-        ltv: c360 ? c360.customer_ltv_da : 200000,
+        ltv: ltvResult.value,
+        isLtvEstimated: ltvResult.isEstimated,
+        status,
         commercialId: factOpportunities.find(o => o.customer_key === c.customer_id)?.sales_rep_key || 'SR01',
         dateAcquired: c.created_at,
         source: getCustomerSource(c.customer_id)
@@ -653,10 +816,12 @@ export const DataService = {
     const customer = dimCustomers.find(c => c.customer_id === customerId);
     if (!customer) return null;
 
-    const c360Info = reportingCustomer360.find(c => c.customer_id === customerId);
+    const c360Info = findReportingCustomer360(customerId);
+    const ltvResult = calculateCustomerLTV(customerId);
+    const status = getCustomerStatus(customerId);
 
     const custOpps = factOpportunities.filter(o => o.customer_key === customerId);
-    const custTransactions = simTransactions.filter(t => t.customer_id === customerId);
+    const custTransactions = getOrCreateTransactions(customerId);
     const custProjects = simProjects.filter(p => p.customer_id === customerId);
     const custInteractions = mockInteractions.filter(i => i.customerId === customerId);
 
@@ -678,8 +843,10 @@ export const DataService = {
         phone: customer.phone,
         company_name: customer.company_name,
         activity_sector: customer.activity_sector,
-        cac: c360Info ? c360Info.customer_cac_da : 0,
-        ltv: c360Info ? c360Info.customer_ltv_da : 0,
+        cac: c360Info ? c360Info.customer_cac_da : 25000,
+        ltv: ltvResult.value,
+        isLtvEstimated: ltvResult.isEstimated,
+        status,
         dateAcquired: customer.created_at,
         source: getCustomerSource(customer.customer_id),
         healthScore: getCustomerHealthScore(customer.customer_id, customer.workshops_attended),
@@ -711,7 +878,7 @@ export const DataService = {
         return {
           id: t.transaction_id,
           amount: t.amount_da,
-          status: t.payment_status === 'paid' ? 'Payé' : t.payment_status === 'pending' ? 'En attente' : 'En retard' as const,
+          status: t.payment_status === 'payé' || t.payment_status === 'paid' ? 'Payé' : t.payment_status === 'pending' || t.payment_status === 'en attente' ? 'En attente' : 'En retard' as const,
           dateIssued: t.transaction_date,
           service: serviceName
         };

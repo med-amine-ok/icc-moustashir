@@ -209,7 +209,7 @@ export default function CockpitPage() {
             <span className="w-2.5 h-2.5 rounded-full bg-[#4DA3FF]"></span>
             Les 4 Axes Stratégiques (Vision 33)
           </h3>
-          <Badge variant="outline" className="text-[10px] font-bold text-slate-500 border-slate-200">
+          <Badge className="text-[10px] font-bold text-slate-500 border border-slate-200 bg-transparent hover:bg-transparent">
             Cadre de Performance Officiel
           </Badge>
         </div>

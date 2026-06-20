@@ -28,6 +28,8 @@ export interface Customer {
   commercialId: string;
   dateAcquired: string; // ISO date
   source: 'Site Web' | 'Publicités' | 'Événements' | 'Ateliers' | 'Prospection Classique' | 'Recommandation';
+  isLtvEstimated?: boolean;
+  status?: 'converted' | 'prospect' | 'lead' | 'lost';
 }
 
 export interface Opportunity {

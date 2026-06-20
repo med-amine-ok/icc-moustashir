@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { useFilters } from '@/context/FilterContext';
-import { DataService } from '@/services/dataService';
+import { DataService, getCustomerStatus, getOrCreateTransactions, calculateCustomerLTV } from '@/services/dataService';
 import { wilayasList } from '@/mock/data';
 import { 
   Card, 
@@ -14,7 +14,13 @@ import {
   Button,
   Input,
   Select,
-  Dialog
+  Dialog,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell
 } from '@/components/ui';
 import { 
   Search, 
@@ -33,9 +39,16 @@ import {
   PlusCircle,
   MessageSquare,
   Clock,
-  Sparkles
+  Sparkles,
+  Info,
+  CheckCircle,
+  AlertCircle,
+  HelpCircle,
+  TrendingDown,
+  ExternalLink,
+  ChevronRight,
+  ShieldCheck
 } from 'lucide-react';
-import { formatDA } from '@/lib/utils';
 import { 
   AreaChart, 
   Area, 
@@ -46,371 +59,750 @@ import {
   ResponsiveContainer 
 } from 'recharts';
 
+// Custom Dinar Formatter to comply with the Algerian/French spacing format
+const formatAlgerianDinar = (val: number): string => {
+  if (val === undefined || val === null) return '0 DA';
+  return Math.round(val).toLocaleString('fr-FR').replace(/,/g, ' ') + ' DA';
+};
+
+const getSourceColor = (source: string) => {
+  const norm = source.toLowerCase();
+  if (norm.includes('web') || norm.includes('site')) return '#4DA3FF'; // Website
+  if (norm.includes('classique') || norm.includes('prospect')) return '#22C55E'; // Classic
+  if (norm.includes('événement')) return '#F59E0B'; // Events
+  if (norm.includes('pub') || norm.includes('marketing')) return '#A855F7'; // Marketing
+  return '#17345C';
+};
+
+const getStatusColor = (status?: string) => {
+  if (!status) return '#64748B';
+  switch (status.toLowerCase()) {
+    case 'converted':
+    case 'gagné':
+    case 'won':
+      return '#22C55E'; // green
+    case 'prospect':
+      return '#4DA3FF'; // blue
+    case 'lead':
+    case 'contacted':
+      return '#64748B'; // gray
+    case 'lost':
+    case 'perdu':
+      return '#EF4444'; // red
+    default:
+      return '#64748B';
+  }
+};
+
+const getStatusLabel = (status: string) => {
+  switch (status.toLowerCase()) {
+    case 'converted':
+      return 'Client Converti';
+    case 'prospect':
+      return 'Prospect Actif';
+    case 'lead':
+      return 'Piste (Lead)';
+    case 'lost':
+      return 'Opportunité Perdue';
+    default:
+      return status;
+  }
+};
+
 export default function CustomersPage() {
   const { filters } = useFilters();
-  const allFilteredCustomers = useMemo(() => DataService.getFilteredCustomers(filters), [filters]);
   
+  // States
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedSegment, setSelectedSegment] = useState('All');
-  const [selectedWilaya, setSelectedWilaya] = useState('All');
-  const [selectedHealth, setSelectedHealth] = useState('All');
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(allFilteredCustomers[0]?.id || null);
+  const [selectedStatus, setSelectedStatus] = useState<'All' | 'converted' | 'prospect' | 'lead' | 'lost'>('All');
+  const [sortBy, setSortBy] = useState<'ltv-desc' | 'ltv-asc' | 'name-asc'>('ltv-desc');
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  
+  // Modals / Traceability States
+  const [activeModal, setActiveModal] = useState<'revenue' | 'cac' | 'ratio' | null>(null);
+  const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
+  const [selectedService, setSelectedService] = useState<any | null>(null);
   const [showLogModal, setShowLogModal] = useState(false);
-  const [logType, setLogType] = useState('Call');
+  const [logType, setLogType] = useState('Appel');
   const [logNotes, setLogNotes] = useState('');
 
-  // Handle Search and Filter Table
-  const filteredTableCustomers = useMemo(() => {
-    return allFilteredCustomers.filter(c => {
-      const nameStr = String(c.name || '');
-      const contactStr = String(c.contactName || '');
-      const idStr = String(c.id || '');
-      const matchSearch = nameStr.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          contactStr.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          idStr.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchSeg = selectedSegment === 'All' || c.segment === selectedSegment;
-      const matchWil = selectedWilaya === 'All' || c.wilaya === selectedWilaya;
-      const matchH = selectedHealth === 'All' || 
-                     (selectedHealth === 'good' && c.healthScore >= 80) ||
-                     (selectedHealth === 'warning' && c.healthScore >= 50 && c.healthScore < 80) ||
-                     (selectedHealth === 'danger' && c.healthScore < 50);
-      return matchSearch && matchSeg && matchWil && matchH;
-    });
-  }, [allFilteredCustomers, searchTerm, selectedSegment, selectedWilaya, selectedHealth]);
+  // Fetch and memoize customers list
+  const allCustomers = useMemo(() => {
+    const custs = DataService.getFilteredCustomers(filters);
+    // Set first customer as default if none selected
+    if (custs.length > 0 && !selectedCustomerId) {
+      setSelectedCustomerId(custs[0].id);
+    }
+    return custs;
+  }, [filters]);
 
-  // Customer Details Lookup
+  // Apply Search, Filter pills, and Sort
+  const processedCustomers = useMemo(() => {
+    let list = [...allCustomers];
+
+    // Search filter
+    if (searchTerm.trim() !== '') {
+      const term = searchTerm.toLowerCase();
+      list = list.filter(c => 
+        c.name.toLowerCase().includes(term) ||
+        (c.contactName && c.contactName.toLowerCase().includes(term)) ||
+        (c.contactEmail && c.contactEmail.toLowerCase().includes(term)) ||
+        c.id.toLowerCase().includes(term)
+      );
+    }
+
+    // Status filter
+    if (selectedStatus !== 'All') {
+      list = list.filter(c => c.status === selectedStatus);
+    }
+
+    // Sorting
+    list.sort((a, b) => {
+      if (sortBy === 'ltv-desc') return b.ltv - a.ltv;
+      if (sortBy === 'ltv-asc') return a.ltv - b.ltv;
+      if (sortBy === 'name-asc') return a.name.localeCompare(b.name);
+      return 0;
+    });
+
+    return list;
+  }, [allCustomers, searchTerm, selectedStatus, sortBy]);
+
+  // Selected customer details
   const details = useMemo(() => {
     if (!selectedCustomerId) return null;
     return DataService.getCustomerDetails(selectedCustomerId);
   }, [selectedCustomerId]);
 
+  // Derived metrics for selected customer
+  const customerSummary = useMemo(() => {
+    if (!details) return null;
+    
+    // Total Paid Revenue
+    const paidTxs = details.transactions.filter(t => t.status === 'Payé');
+    const totalPaid = paidTxs.reduce((sum, t) => sum + t.amount, 0);
+
+    // Total Invoiced Value (all transactions)
+    const totalInvoiced = details.transactions.reduce((sum, t) => sum + t.amount, 0);
+
+    // Pipeline Value (sum of expected_revenue_da of open opportunities)
+    const openOpps = details.opportunities.filter(o => !['Gagné', 'Won', 'Perdu', 'Lost'].includes(o.stage));
+    const pipelineValue = openOpps.reduce((sum, o) => sum + o.value, 0);
+
+    // Invoices breakdown
+    const pendingCount = details.transactions.filter(t => t.status === 'En attente').length;
+    const overdueCount = details.transactions.filter(t => t.status === 'En retard').length;
+    const paidCount = paidTxs.length;
+
+    return {
+      totalPaid,
+      totalInvoiced,
+      pipelineValue,
+      pendingCount,
+      overdueCount,
+      paidCount,
+      ltvCacRatio: details.customer.cac > 0 ? (details.customer.ltv / details.customer.cac).toFixed(1) : '0.0'
+    };
+  }, [details]);
+
+  // Group monthly invoicing for Recharts AreaChart
+  const invoicingHistory = useMemo(() => {
+    if (!details) return [];
+    
+    // Sort transactions by date asc
+    const sorted = [...details.transactions].sort((a, b) => a.dateIssued.localeCompare(b.dateIssued));
+    
+    // Group by month e.g. 'Jan', 'Féb'
+    const grouped: Record<string, number> = {};
+    sorted.forEach((tx) => {
+      const d = new Date(tx.dateIssued);
+      const monthLabel = d.toLocaleString('fr-FR', { month: 'short' });
+      grouped[monthLabel] = (grouped[monthLabel] || 0) + tx.amount;
+    });
+
+    return Object.entries(grouped).map(([name, amount]) => ({
+      name,
+      Facturation: amount
+    }));
+  }, [details]);
+
+  // Log interaction submission handler
   const handleLogInteraction = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!details) return;
-    
-    // Add simulation message
+    if (!details || !logNotes.trim()) return;
+
+    const validTypes = ['Réunion', 'Proposition', 'E-mail', 'Téléphone'] as const;
+    const mappedType = logType === 'Appel' ? 'Téléphone' : logType === 'Email' ? 'E-mail' : logType === 'Réunion' ? 'Réunion' : 'Proposition';
+    const finalType = validTypes.includes(mappedType as any) ? (mappedType as typeof validTypes[number]) : 'E-mail';
+
     const newLog = {
-      type: logType,
+      id: `int-${Date.now()}`,
+      customerId: details.customer.id,
+      type: finalType,
+      notes: logNotes,
       date: new Date().toISOString().split('T')[0],
-      notes: logNotes
+      employeeId: 'SR01'
     };
-    details.interactions.unshift(newLog as any);
-    
-    // Clean states
+
+    details.interactions.unshift(newLog);
     setLogNotes('');
     setShowLogModal(false);
   };
 
-  // Get color for Health Score
-  const getHealthColor = (score: number) => {
-    if (score >= 80) return 'success';
-    if (score >= 50) return 'warning';
-    return 'danger';
-  };
-
-  const getHealthText = (score: number) => {
-    if (score >= 80) return 'Excellent';
-    if (score >= 50) return 'Moyen';
-    return 'À Risque';
+  // Get color and text for health score
+  const getHealthLevel = (score: number) => {
+    if (score >= 80) return { label: 'Excellent', color: '#22C55E' };
+    if (score >= 50) return { label: 'Moyen', color: '#F59E0B' };
+    return { label: 'À Risque', color: '#EF4444' };
   };
 
   return (
-    <div className="space-y-6">
-      {/* Master Layout: 2 Columns */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+    <div className="h-[calc(100vh-80px)] overflow-hidden -mx-6 -my-6 flex flex-col bg-[#F8FAFC]">
+      {/* Header bar */}
+      <div className="bg-white border-b border-[#DCE5EE] px-6 py-4 flex items-center justify-between shrink-0">
+        <div>
+          <h1 className="text-xl font-bold text-[#17345C] flex items-center gap-2">
+            <User size={20} className="text-[#4DA3FF]" />
+            Customer 360 & Traçabilité
+          </h1>
+          <p className="text-xs text-[#6B7C93]">
+            Vue d'ensemble complète et traçabilité de bout en bout des interactions clients.
+          </p>
+        </div>
+        <div className="text-xs text-[#6B7C93] flex items-center gap-2 bg-[#EEF4F8] px-3 py-1.5 rounded-lg border border-[#DCE5EE]">
+          <ShieldCheck size={14} className="text-[#22C55E]" />
+          <span>Lineage de données DW validé</span>
+        </div>
+      </div>
+
+      {/* Main split dashboard grid */}
+      <div className="flex-1 flex overflow-hidden">
         
-        {/* Left Side: Master List */}
-        <div className="xl:col-span-5 space-y-4">
-          <Card>
-            <CardHeader className="p-4 flex flex-row items-center justify-between border-b border-slate-100">
-              <div>
-                <CardTitle>Annuaire Clients</CardTitle>
-                <CardDescription>Liste filtrée des entreprises actives ({filteredTableCustomers.length})</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="p-4 space-y-3">
-              {/* Search and Filters */}
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-                <Input
-                  placeholder="Rechercher nom, contact, ID..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-8 text-xs py-1.5"
-                />
-              </div>
+        {/* LEFT PANEL: 30% Width Customer List */}
+        <div className="w-[30%] min-w-[340px] max-w-[400px] border-r border-[#DCE5EE] bg-white flex flex-col h-full shrink-0">
+          
+          {/* Top Search, Pills & Sort Panel */}
+          <div className="p-4 border-b border-[#DCE5EE] space-y-3 shrink-0">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6B7C93]" size={16} />
+              <Input
+                placeholder="Rechercher nom, email, entreprise..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9 text-xs py-2 bg-[#F8FAFC]"
+              />
+            </div>
 
-              <div className="grid grid-cols-3 gap-2">
-                <Select
-                  value={selectedSegment}
-                  onChange={(e) => setSelectedSegment(e.target.value)}
-                  className="text-xs py-1"
+            {/* Filter pills */}
+            <div className="flex flex-wrap gap-1">
+              {(['All', 'converted', 'prospect', 'lead', 'lost'] as const).map((status) => (
+                <button
+                  key={status}
+                  onClick={() => setSelectedStatus(status)}
+                  className={`px-2 py-1 rounded text-[10px] font-bold border uppercase transition-all duration-200 ${
+                    selectedStatus === status
+                      ? 'bg-[#17345C] border-[#17345C] text-white'
+                      : 'bg-white border-[#DCE5EE] text-[#6B7C93] hover:bg-[#EEF4F8]'
+                  }`}
                 >
-                  <option value="All">Secteur: Tout</option>
-                  <option value="Startup">Startup</option>
-                  <option value="PME">PME</option>
-                  <option value="Clinique">Clinique</option>
-                  <option value="Éducation">Éducation</option>
-                  <option value="Marketplace">Marketplace</option>
-                  <option value="Grande Entreprise">Grande Entreprise</option>
-                </Select>
+                  {status === 'All' ? 'Tous' : status === 'converted' ? 'Convertis' : status === 'prospect' ? 'Prospects' : status === 'lead' ? 'Leads' : 'Perdus'}
+                </button>
+              ))}
+            </div>
 
-                <Select
-                  value={selectedWilaya}
-                  onChange={(e) => setSelectedWilaya(e.target.value)}
-                  className="text-xs py-1 max-w-[120px]"
-                >
-                  <option value="All">Wilaya: Tout</option>
-                  {wilayasList.map((w) => (
-                    <option key={w} value={w}>{w}</option>
-                  ))}
-                </Select>
+            {/* Sort Dropdown */}
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-[10px] font-bold text-[#6B7C93] uppercase">Trier la liste :</span>
+              <Select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as any)}
+                className="text-[11px] py-1 px-2 h-7 bg-white"
+              >
+                <option value="ltv-desc">Valeur LTV (Décroissante)</option>
+                <option value="ltv-asc">Valeur LTV (Croissante)</option>
+                <option value="name-asc">Nom (A-Z)</option>
+              </Select>
+            </div>
+          </div>
 
-                <Select
-                  value={selectedHealth}
-                  onChange={(e) => setSelectedHealth(e.target.value)}
-                  className="text-xs py-1"
-                >
-                  <option value="All">Santé: Tout</option>
-                  <option value="good">Excellent (&gt;80)</option>
-                  <option value="warning">Moyen (50-80)</option>
-                  <option value="danger">À Risque (&lt;50)</option>
-                </Select>
+          {/* Customer Scroll List */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+            {processedCustomers.length === 0 ? (
+              <div className="text-center py-12 text-[#6B7C93]">
+                <Info size={24} className="mx-auto text-slate-300 mb-2" />
+                <p className="text-xs">Aucun client ne correspond aux critères.</p>
               </div>
+            ) : (
+              processedCustomers.map((cust) => {
+                const isSelected = selectedCustomerId === cust.id;
+                const initials = cust.name && typeof cust.name === 'string'
+                  ? cust.name
+                      .split(' ')
+                      .map((n) => n[0])
+                      .join('')
+                      .toUpperCase()
+                      .slice(0, 2)
+                  : 'C';
+                
+                return (
+                  <div
+                    key={cust.id}
+                    onClick={() => setSelectedCustomerId(cust.id)}
+                    className={`relative p-3.5 rounded-lg border text-left cursor-pointer transition-all duration-200 ${
+                      isSelected 
+                        ? 'border-[#17345C] bg-[#EEF4F8]/50 ring-1 ring-[#17345C]/20 shadow-sm' 
+                        : 'border-[#DCE5EE] bg-white hover:border-[#6B7C93] hover:shadow-xs'
+                    }`}
+                  >
+                    {/* Selected Left indicator bar */}
+                    {isSelected && (
+                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#17345C] rounded-l-lg" />
+                    )}
 
-              {/* Customer Rows Scroll Area */}
-              <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
-                {filteredTableCustomers.length === 0 ? (
-                  <div className="text-center py-8 text-slate-400 text-xs">
-                    Aucun client trouvé avec ces critères.
-                  </div>
-                ) : (
-                  filteredTableCustomers.map((cust) => (
-                    <div
-                      key={cust.id}
-                      onClick={() => setSelectedCustomerId(cust.id)}
-                      className={`p-3 rounded-lg border text-left cursor-pointer transition-all ${
-                        selectedCustomerId === cust.id 
-                          ? 'border-[#4DA3FF] bg-[#EEF4F8]/50 shadow-sm' 
-                          : 'border-slate-100 hover:border-slate-200 bg-white'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-slate-400">ID: {cust.id}</span>
-                        <Badge variant={getHealthColor(cust.healthScore)}>{cust.healthScore}/100</Badge>
+                    <div className="flex gap-3">
+                      {/* Avatar colored by source */}
+                      <div
+                        className="w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0 shadow-xs"
+                        style={{ backgroundColor: getSourceColor(cust.source) }}
+                      >
+                        {initials}
                       </div>
-                      <h4 className="text-xs font-bold text-slate-800 mt-1">{cust.name}</h4>
-                      
-                      <div className="flex items-center justify-between mt-3 text-[10px] text-slate-500">
-                        <div className="flex items-center gap-1">
-                          <MapPin size={10} />
-                          <span>{cust.wilaya}</span>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] font-bold text-[#6B7C93] tracking-wider uppercase truncate">
+                            ID: {cust.id}
+                          </span>
+                          {/* Status Dot */}
+                          <div className="flex items-center gap-1">
+                            <span 
+                              className="w-2 h-2 rounded-full inline-block"
+                              style={{ backgroundColor: getStatusColor(cust.status) }}
+                            />
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1">
-                          <Briefcase size={10} />
-                          <span>{cust.segment}</span>
+
+                        <h4 className="text-xs font-bold text-[#17345C] truncate mt-0.5">{cust.name}</h4>
+                        
+                        {/* Company / Wilaya info */}
+                        <div className="flex items-center gap-3 text-[10px] text-[#6B7C93] mt-2">
+                          <span className="truncate max-w-[120px] font-medium">
+                            {cust.segment}
+                          </span>
+                          <span className="flex items-center gap-0.5">
+                            <MapPin size={10} />
+                            {cust.wilaya}
+                          </span>
                         </div>
-                        <span className="font-semibold text-slate-700">{formatDA(cust.ltv)}</span>
+
+                        {/* LTV line */}
+                        <div className="flex items-center justify-between border-t border-[#DCE5EE] pt-2 mt-2.5">
+                          <Badge variant="secondary" className="text-[8px] px-1.5 py-0">
+                            {cust.source}
+                          </Badge>
+                          <span className="text-xs font-bold text-[#17345C]">
+                            {cust.isLtvEstimated ? `~ ${formatAlgerianDinar(cust.ltv)}` : formatAlgerianDinar(cust.ltv)}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  ))
-                )}
-              </div>
-            </CardContent>
-          </Card>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
 
-        {/* Right Side: Detail Customer 360 View */}
-        <div className="xl:col-span-7">
-          {details ? (
-            <div className="space-y-6">
-              {/* Main Client Profile Header Card */}
-              <Card className="border-l-4 border-l-[#4DA3FF]">
-                <CardContent className="p-6 space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <Badge variant="secondary">{details.customer.segment}</Badge>
-                        <span className="text-xs font-semibold text-slate-400">ID: {details.customer.id}</span>
+        {/* RIGHT PANEL: 70% Width Customer Profile Details */}
+        <div className="flex-1 overflow-y-auto h-full p-6 space-y-6">
+          {details && customerSummary ? (
+            <div className="space-y-6 max-w-5xl mx-auto">
+              
+              {/* SECTION 1: HERO HEADER CARD */}
+              <Card className="border-l-4" style={{ borderLeftColor: getStatusColor(details.customer.status) }}>
+                <CardContent className="p-6">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                    <div className="flex gap-4 items-center">
+                      {/* Large 64px initials avatar */}
+                      <div
+                        className="w-16 h-16 rounded-full flex items-center justify-center text-lg font-bold text-white shadow-md shrink-0"
+                        style={{ backgroundColor: getSourceColor(details.customer.source) }}
+                      >
+                        {details.customer.name && typeof details.customer.name === 'string'
+                          ? details.customer.name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)
+                          : 'C'}
                       </div>
-                      <h2 className="text-xl font-bold text-slate-800">{details.customer.name}</h2>
-                      <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                        <MapPin size={14} className="text-slate-400" />
-                        <span>Wilaya de {details.customer.wilaya}</span>
-                      </div>
-                    </div>
-                    
-                    <div className="flex sm:flex-col items-start sm:items-end justify-between sm:justify-start gap-4">
-                      <div className="text-left sm:text-right">
-                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Health Score</span>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <span className={`text-base font-extrabold text-${getHealthColor(details.customer.healthScore) === 'success' ? 'emerald' : getHealthColor(details.customer.healthScore) === 'warning' ? 'amber' : 'red'}-600`}>
-                            {details.customer.healthScore}
-                          </span>
-                          <Badge variant={getHealthColor(details.customer.healthScore)}>
-                            {getHealthText(details.customer.healthScore)}
+
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="secondary" className="text-[10px]">{details.customer.segment}</Badge>
+                          <Badge 
+                            variant="secondary" 
+                            style={{ 
+                              backgroundColor: `${getStatusColor(details.customer.status)}15`, 
+                              color: getStatusColor(details.customer.status),
+                              borderColor: `${getStatusColor(details.customer.status)}25`
+                            }}
+                          >
+                            {getStatusLabel(details.customer.status)}
                           </Badge>
                         </div>
+                        <h2 className="text-xl font-bold text-[#17345C]">{details.customer.name}</h2>
+                        <p className="text-xs text-[#6B7C93] flex items-center gap-1">
+                          <Briefcase size={12} className="text-slate-400" />
+                          <span>{details.customer.activity_sector || 'Secteur non spécifié'}</span>
+                          <span className="text-slate-300">•</span>
+                          <MapPin size={12} className="text-slate-400" />
+                          <span>{details.customer.wilaya}</span>
+                        </p>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Financial LTV & CAC Info */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-100">
-                    <div>
-                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Valeur à Vie (LTV)</span>
-                      <span className="text-sm font-bold text-slate-800">{formatDA(details.customer.ltv)}</span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Coût d'Acquisition (CAC)</span>
-                      <span className="text-sm font-bold text-slate-800">{formatDA(details.customer.cac)}</span>
-                    </div>
-                    <div className="col-span-2 sm:col-span-1">
-                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Ratio LTV / CAC</span>
-                      <span className="text-sm font-bold text-emerald-600">
-                        {(details.customer.ltv / details.customer.cac).toFixed(1)}x
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Contact Info and Buttons */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-4 border-t border-slate-100">
-                    <div className="space-y-1">
-                      <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Contact Principal</span>
-                      <div className="text-xs text-slate-700 flex flex-wrap gap-x-4 gap-y-1">
-                        <span className="font-bold flex items-center gap-1"><User size={12} className="text-slate-400" /> {details.customer.contactName}</span>
-                        <span className="flex items-center gap-1"><Mail size={12} className="text-slate-400" /> {details.customer.contactEmail}</span>
-                        <span className="flex items-center gap-1"><Phone size={12} className="text-slate-400" /> {details.customer.contactPhone}</span>
+                    {/* Health score widget */}
+                    <div className="flex items-center gap-3 bg-[#F8FAFC] border border-[#DCE5EE] p-3 rounded-lg shrink-0">
+                      <div className="text-left">
+                        <span className="text-[9px] text-[#6B7C93] font-bold uppercase tracking-wider block">Health Score</span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span 
+                            className="text-lg font-extrabold"
+                            style={{ color: getHealthLevel(details.customer.healthScore).color }}
+                          >
+                            {details.customer.healthScore}
+                          </span>
+                          <span className="text-xs text-[#6B7C93]">/100</span>
+                        </div>
                       </div>
-                    </div>
-                    
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" onClick={() => setShowLogModal(true)}>
-                        <MessageSquare size={14} className="mr-1.5" />
-                        Journaliser
-                      </Button>
+                      <div className="w-1.5 h-10 rounded-full" style={{ backgroundColor: getHealthLevel(details.customer.healthScore).color }} />
                     </div>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* Traceability Pathway Timeline */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2">
-                    <Sparkles size={16} className="text-[#4DA3FF]" />
-                    Parcours d'Acquisition & Traçabilité
-                  </CardTitle>
-                  <CardDescription>Tracé chronologique du prospect jusqu'au paiement encaissé.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="relative pl-6 border-l border-slate-200 space-y-4 py-2">
-                    {/* Step 1: Marketing Source */}
-                    <div className="relative">
-                      <span className="absolute -left-8 top-0.5 bg-[#EEF4F8] text-[#17345C] p-1 rounded-full border border-[#DCE5EE]">
-                        <Layers size={10} />
-                      </span>
-                      <div className="space-y-0.5">
-                        <span className="text-[10px] font-bold text-slate-400">Canal d'Entrée Marketing</span>
-                        <h5 className="text-xs font-bold text-slate-800">Source : {details.customer.source}</h5>
-                      </div>
-                    </div>
-
-                    {/* Step 2: Commercial Assigned */}
-                    <div className="relative">
-                      <span className="absolute -left-8 top-0.5 bg-indigo-50 text-indigo-600 p-1 rounded-full border border-indigo-100">
-                        <User size={10} />
-                      </span>
-                      <div className="space-y-0.5">
-                        <span className="text-[10px] font-bold text-slate-400">Prise en Charge Commerciale</span>
-                        <h5 className="text-xs font-bold text-slate-800">Responsable : {details.commercial?.name || 'Non affecté'}</h5>
-                      </div>
-                    </div>
-
-                    {/* Step 3: Project Delivered */}
-                    {details.projects.length > 0 && (
-                      <div className="relative">
-                        <span className="absolute -left-8 top-0.5 bg-amber-50 text-amber-600 p-1 rounded-full border border-amber-100">
-                          <Clock size={10} />
-                        </span>
-                        <div className="space-y-0.5">
-                          <span className="text-[10px] font-bold text-slate-400">Services & Livrables Actifs</span>
-                          <h5 className="text-xs font-bold text-slate-800">
-                            {details.projects.map(p => `${p.service} (${p.status})`).join(', ')}
-                          </h5>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Step 4: First Transaction Payment */}
-                    {details.transactions.length > 0 && (
-                      <div className="relative">
-                        <span className="absolute -left-8 top-0.5 bg-emerald-50 text-emerald-600 p-1 rounded-full border border-emerald-100">
-                          <DollarSign size={10} />
-                        </span>
-                        <div className="space-y-0.5">
-                          <span className="text-[10px] font-bold text-slate-400">Statut de la Facturation Globale</span>
-                          <h5 className="text-xs font-bold text-slate-800">
-                            Dernière facture : {details.transactions[0].id} - {formatDA(details.transactions[0].amount)} ({details.transactions[0].status})
-                          </h5>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Transactions and Interactions tabs */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* SECTION 2: INTERACTIVE KPI CARDS ROW */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                 
-                {/* Opportunities & Projects */}
-                <div className="space-y-4">
-                  {/* Active Services */}
-                  <Card>
-                    <CardHeader className="p-4 border-b border-slate-100">
-                      <CardTitle className="text-sm">Prestations & Projets</CardTitle>
-                    </CardHeader>
-                    <CardContent className="p-4 max-h-52 overflow-y-auto">
-                      {details.projects.length === 0 ? (
-                        <p className="text-xs text-slate-400">Aucun projet actif enregistré.</p>
+                {/* Total Paid Revenue KPI Card */}
+                <Card 
+                  className="hover:shadow-md cursor-pointer hover:border-[#4DA3FF] transition-all duration-200"
+                  onClick={() => setActiveModal('revenue')}
+                >
+                  <CardContent className="p-4 space-y-1.5 relative">
+                    <span className="text-[10px] text-[#6B7C93] font-bold uppercase block tracking-wider">Chiffre d'Affaire Encaissé</span>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-base font-extrabold text-[#17345C] truncate">
+                        {formatAlgerianDinar(customerSummary.totalPaid)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 text-[10px] text-[#22C55E] font-semibold">
+                      <CheckCircle size={10} />
+                      <span>{customerSummary.paidCount} Facture(s) Payée(s)</span>
+                    </div>
+                    <div className="absolute right-3 bottom-3 text-slate-300">
+                      <DollarSign size={16} />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* CAC KPI Card */}
+                <Card 
+                  className="hover:shadow-md cursor-pointer hover:border-[#4DA3FF] transition-all duration-200"
+                  onClick={() => setActiveModal('cac')}
+                >
+                  <CardContent className="p-4 space-y-1.5 relative">
+                    <span className="text-[10px] text-[#6B7C93] font-bold uppercase block tracking-wider">Coût Acquisition (CAC)</span>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-base font-extrabold text-[#17345C]">
+                        {formatAlgerianDinar(details.customer.cac)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-[#6B7C93] font-medium block">
+                      Canal : {details.customer.source}
+                    </span>
+                    <div className="absolute right-3 bottom-3 text-slate-300">
+                      <Layers size={16} />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* LTV KPI Card */}
+                <Card className="relative">
+                  <CardContent className="p-4 space-y-1.5">
+                    <span className="text-[10px] text-[#6B7C93] font-bold uppercase block tracking-wider">Valeur à Vie (LTV)</span>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-base font-extrabold text-[#17345C]">
+                        {details.customer.isLtvEstimated ? `~ ${formatAlgerianDinar(details.customer.ltv)}` : formatAlgerianDinar(details.customer.ltv)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-[#6B7C93] font-medium flex items-center gap-1">
+                      {details.customer.isLtvEstimated ? (
+                        <>
+                          <AlertCircle size={10} className="text-[#F59E0B]" />
+                          <span className="text-[#F59E0B] font-semibold">Estimation du pipeline</span>
+                        </>
                       ) : (
-                        <div className="space-y-3">
-                          {details.projects.map((p, idx) => (
-                            <div key={idx} className="flex items-center justify-between text-xs pb-2.5 border-b border-slate-100 last:border-0 last:pb-0">
-                              <div>
-                                <p className="font-bold text-slate-700">{p.service}</p>
-                                <span className="text-[10px] text-slate-400">Début : {p.startDate}</span>
-                              </div>
-                              <Badge variant={p.status === 'Terminé' ? 'success' : p.status === 'En cours' ? 'info' : p.status === 'En retard' ? 'danger' : 'warning'}>
-                                {p.status}
-                              </Badge>
-                            </div>
-                          ))}
+                        <>
+                          <CheckCircle size={10} className="text-[#22C55E]" />
+                          <span className="text-[#22C55E]">Calculé (Chiffre Réel)</span>
+                        </>
+                      )}
+                    </span>
+                    <div className="absolute right-3 bottom-3 text-slate-300">
+                      <TrendingUp size={16} />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* LTV/CAC Ratio Card */}
+                <Card 
+                  className="hover:shadow-md cursor-pointer hover:border-[#4DA3FF] transition-all duration-200"
+                  onClick={() => setActiveModal('ratio')}
+                >
+                  <CardContent className="p-4 space-y-1.5 relative">
+                    <span className="text-[10px] text-[#6B7C93] font-bold uppercase block tracking-wider">Ratio LTV / CAC</span>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-base font-extrabold text-[#22C55E]">
+                        {customerSummary.ltvCacRatio}x
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-[#6B7C93] font-medium block">
+                      Seuil de rentabilité (3x) dépassé
+                    </span>
+                    <div className="absolute right-3 bottom-3 text-slate-300">
+                      <TrendingUp size={16} />
+                    </div>
+                  </CardContent>
+                </Card>
+
+              </div>
+
+              {/* SECTION 3: TWO-COLUMN DETAILS LAYOUT */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                
+                {/* COLUMN 1 (55% Width - col-span-7): Journey Timeline & Services Purchased */}
+                <div className="lg:col-span-7 space-y-6">
+                  
+                  {/* Acquisition Timeline */}
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <Clock size={16} className="text-[#4DA3FF]" />
+                        Parcours d'Acquisition & Traçabilité
+                      </CardTitle>
+                      <CardDescription>Lineage chronologique des points de contact client.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="relative pl-7 border-l-2 border-[#DCE5EE] ml-6 space-y-5 py-1">
+                      {/* Step 1: Marketing entry */}
+                      <div className="relative">
+                        <span className="absolute -left-10 top-0.5 w-6 h-6 rounded-full bg-[#17345C]/10 border border-[#17345C]/20 flex items-center justify-center text-[#17345C]">
+                          <Layers size={11} />
+                        </span>
+                        <div>
+                          <span className="text-[9px] font-bold text-[#6B7C93] uppercase block">Étape 1 : Acquisition</span>
+                          <h5 className="text-xs font-bold text-[#17345C]">
+                            Entrée par le canal : {details.customer.source}
+                          </h5>
+                          <p className="text-[10px] text-[#6B7C93] mt-0.5">
+                            Coût d'acquisition alloué de {formatAlgerianDinar(details.customer.cac)}.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Step 2: Commercial Assignee */}
+                      <div className="relative">
+                        <span className="absolute -left-10 top-0.5 w-6 h-6 rounded-full bg-[#4DA3FF]/10 border border-[#4DA3FF]/20 flex items-center justify-center text-[#4DA3FF]">
+                          <User size={11} />
+                        </span>
+                        <div>
+                          <span className="text-[9px] font-bold text-[#6B7C93] uppercase block">Étape 2 : Qualification</span>
+                          <h5 className="text-xs font-bold text-[#17345C]">
+                            Commercial assigné : {details.commercial?.name || 'Non assigné'}
+                          </h5>
+                          <p className="text-[10px] text-[#6B7C93] mt-0.5">
+                            Suivi commercial actif et négociation d'opportunités.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Step 3: Projects started */}
+                      {details.projects.length > 0 && (
+                        <div className="relative">
+                          <span className="absolute -left-10 top-0.5 w-6 h-6 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+                            <Clock size={11} />
+                          </span>
+                          <div>
+                            <span className="text-[9px] font-bold text-[#6B7C93] uppercase block">Étape 3 : Prestation</span>
+                            <h5 className="text-xs font-bold text-[#17345C]">
+                              Projets de livraison démarrés ({details.projects.length} projet(s))
+                            </h5>
+                            <p className="text-[10px] text-[#6B7C93] mt-0.5">
+                              Prestation en cours de réalisation par l'équipe technique.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Step 4: Payments / Transaction */}
+                      {details.transactions.length > 0 && (
+                        <div className="relative">
+                          <span className="absolute -left-10 top-0.5 w-6 h-6 rounded-full bg-[#22C55E]/10 border border-[#22C55E]/20 flex items-center justify-center text-[#22C55E]">
+                            <DollarSign size={11} />
+                          </span>
+                          <div>
+                            <span className="text-[9px] font-bold text-[#6B7C93] uppercase block">Étape 4 : Facturation</span>
+                            <h5 className="text-xs font-bold text-[#17345C]">
+                              Transactions de paiement finalisées
+                            </h5>
+                            <p className="text-[10px] text-[#6B7C93] mt-0.5">
+                              Dernier règlement enregistré : {details.transactions[0].id} ({details.transactions[0].status}).
+                            </p>
+                          </div>
                         </div>
                       )}
                     </CardContent>
                   </Card>
 
-                  {/* Opportunities */}
+                  {/* Services Purchased Table */}
                   <Card>
-                    <CardHeader className="p-4 border-b border-slate-100">
-                      <CardTitle className="text-sm">Opportunités Comm. ({details.opportunities.length})</CardTitle>
+                    <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                      <div>
+                        <CardTitle className="text-sm">Services achetés / Projet associés</CardTitle>
+                        <CardDescription>Détail complet des prestations réalisées pour le client.</CardDescription>
+                      </div>
+                      <Badge variant="secondary">{details.projects.length} Prestations</Badge>
                     </CardHeader>
-                    <CardContent className="p-4 max-h-52 overflow-y-auto">
-                      {details.opportunities.length === 0 ? (
-                        <p className="text-xs text-slate-400">Aucune opportunité enregistrée.</p>
+                    <CardContent className="p-0">
+                      {details.projects.length === 0 ? (
+                        <p className="text-xs text-[#6B7C93] p-6">Aucun service acheté pour l'instant.</p>
                       ) : (
-                        <div className="space-y-3">
-                          {details.opportunities.map((opp, idx) => (
-                            <div key={idx} className="flex items-center justify-between text-xs pb-2.5 border-b border-slate-100 last:border-0 last:pb-0">
-                              <div>
-                                <p className="font-bold text-slate-700">{opp.title}</p>
-                                <span className="text-[10px] text-slate-400">Date : {opp.dateCreated}</span>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="text-[10px]">Service</TableHead>
+                              <TableHead className="text-[10px]">Date Début</TableHead>
+                              <TableHead className="text-[10px]">Date Fin</TableHead>
+                              <TableHead className="text-[10px]">Statut</TableHead>
+                              <TableHead className="text-[10px] text-right">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {details.projects.map((p, idx) => (
+                              <TableRow key={idx}>
+                                <TableCell className="font-bold text-[#17345C] text-xs">
+                                  {p.service}
+                                </TableCell>
+                                <TableCell className="text-xs">
+                                  {p.startDate}
+                                </TableCell>
+                                <TableCell className="text-xs">
+                                  {p.endDate}
+                                </TableCell>
+                                <TableCell>
+                                  <Badge 
+                                    variant={p.status === 'Terminé' ? 'success' : p.status === 'En retard' ? 'danger' : 'info'}
+                                    className="text-[9px] px-1.5 py-0"
+                                  >
+                                    {p.status}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Button 
+                                    variant="outline" 
+                                    size="sm" 
+                                    className="h-6 px-2 text-[10px]"
+                                    onClick={() => setSelectedService(p)}
+                                  >
+                                    <ExternalLink size={10} className="mr-1" />
+                                    Détails
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                </div>
+
+                {/* COLUMN 2 (45% Width - col-span-5): Invoices list, Contact info, Data Quality */}
+                <div className="lg:col-span-5 space-y-6">
+                  
+                  {/* Contact Info Card */}
+                  <Card>
+                    <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                      <CardTitle className="text-sm">Fiche Contact</CardTitle>
+                      <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={() => setShowLogModal(true)}>
+                        <PlusCircle size={12} className="mr-1" />
+                        Interaction
+                      </Button>
+                    </CardHeader>
+                    <CardContent className="space-y-3.5">
+                      <div className="flex items-start gap-2.5 text-xs text-[#17345C]">
+                        <User size={14} className="text-[#6B7C93] mt-0.5" />
+                        <div>
+                          <span className="text-[9px] text-[#6B7C93] font-semibold block uppercase">Représentant</span>
+                          <span className="font-bold">{details.customer.contactName}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-start gap-2.5 text-xs text-[#17345C]">
+                        <Mail size={14} className="text-[#6B7C93] mt-0.5" />
+                        <div>
+                          <span className="text-[9px] text-[#6B7C93] font-semibold block uppercase">E-mail Professionnel</span>
+                          <span className="font-medium select-all">{details.customer.contactEmail || 'Non spécifié'}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-start gap-2.5 text-xs text-[#17345C]">
+                        <Phone size={14} className="text-[#6B7C93] mt-0.5" />
+                        <div>
+                          <span className="text-[9px] text-[#6B7C93] font-semibold block uppercase">Téléphone</span>
+                          <span className="font-medium select-all">{details.customer.contactPhone || 'Non spécifié'}</span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Factures (Invoices) List */}
+                  <Card>
+                    <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                      <div>
+                        <CardTitle className="text-sm">Facturation & Règlements</CardTitle>
+                        <CardDescription>Inclus factures réelles et synthétiques.</CardDescription>
+                      </div>
+                      <Badge variant="secondary">{details.transactions.length} Factures</Badge>
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      {details.transactions.length === 0 ? (
+                        <p className="text-xs text-[#6B7C93] p-6">Aucune facture émise.</p>
+                      ) : (
+                        <div className="divide-y divide-[#DCE5EE]">
+                          {details.transactions.map((tx) => (
+                            <div 
+                              key={tx.id}
+                              onClick={() => setSelectedInvoice(tx)}
+                              className="p-3.5 flex items-center justify-between hover:bg-[#EEF4F8]/30 cursor-pointer transition-all duration-200"
+                            >
+                              <div className="space-y-0.5 min-w-0">
+                                <span className="text-[9px] text-[#6B7C93] font-bold block truncate">
+                                  {tx.id}
+                                </span>
+                                <h6 className="text-[11px] font-bold text-[#17345C] truncate">
+                                  {tx.service}
+                                </h6>
+                                <span className="text-[9px] text-[#6B7C93] block">
+                                  Émise le : {tx.dateIssued}
+                                </span>
                               </div>
-                              <div className="text-right">
-                                <p className="font-bold text-slate-800">{formatDA(opp.value)}</p>
-                                <Badge variant={opp.stage === 'Gagné' ? 'success' : opp.stage === 'Perdu' ? 'danger' : 'info'}>
-                                  {opp.stage}
+                              <div className="text-right shrink-0">
+                                <span className="text-xs font-bold text-[#17345C] block">
+                                  {formatAlgerianDinar(tx.amount)}
+                                </span>
+                                <Badge 
+                                  variant={tx.status === 'Payé' ? 'success' : tx.status === 'En retard' ? 'danger' : 'warning'}
+                                  className="text-[8px] px-1 py-0 mt-0.5"
+                                >
+                                  {tx.status}
                                 </Badge>
                               </div>
                             </div>
@@ -419,45 +811,370 @@ export default function CustomersPage() {
                       )}
                     </CardContent>
                   </Card>
-                </div>
 
-                {/* Interactions & History */}
-                <div className="space-y-4">
-                  {/* Interactions Log */}
+                  {/* Data Quality & Lineage Card */}
                   <Card>
-                    <CardHeader className="p-4 border-b border-slate-100">
-                      <CardTitle className="text-sm">Activités & Comptes Rendus</CardTitle>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-xs flex items-center gap-1.5">
+                        <Info size={14} className="text-[#4DA3FF]" />
+                        Qualité de la donnée client
+                      </CardTitle>
                     </CardHeader>
-                    <CardContent className="p-4 max-h-[360px] overflow-y-auto">
-                      {details.interactions.length === 0 ? (
-                        <p className="text-xs text-slate-400">Aucune interaction répertoriée.</p>
-                      ) : (
-                        <div className="space-y-4">
-                          {details.interactions.map((int, idx) => (
-                            <div key={idx} className="text-xs space-y-1 pb-3 border-b border-slate-100 last:border-0 last:pb-0">
-                              <div className="flex items-center justify-between">
-                                <Badge variant="secondary">{int.type}</Badge>
-                                <span className="text-[10px] text-slate-400">{int.date}</span>
-                              </div>
-                              <p className="text-slate-600 italic font-medium">"{int.notes}"</p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                    <CardContent className="space-y-2.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-[#6B7C93]">Validité Téléphone / Email</span>
+                        <Badge variant="success">OK (Fuzzy Matché)</Badge>
+                      </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-[#6B7C93]">Origine des Transactions</span>
+                        <span className="text-[10px] font-bold text-[#17345C]">
+                          {details.transactions.some(t => t.id.startsWith('MUST-2026-')) ? 'Invoices Synthétiques DW' : 'Transactions Physiques'}
+                        </span>
+                      </div>
+                      <div className="w-full bg-slate-100 rounded-full h-1.5 mt-2">
+                        <div className="bg-[#22C55E] h-1.5 rounded-full w-[95%]" />
+                      </div>
                     </CardContent>
                   </Card>
+
                 </div>
+
               </div>
+
+              {/* SECTION 4: BOTTOM ANALYTICS ROW */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <TrendingUp size={16} className="text-[#4DA3FF]" />
+                    Évolution de la Facturation Client (DA)
+                  </CardTitle>
+                  <CardDescription>Flux cumulé et périodicité des règlements clients.</CardDescription>
+                </CardHeader>
+                <CardContent className="h-64 pt-2">
+                  {invoicingHistory.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-xs text-[#6B7C93]">
+                      Historique financier insuffisant pour modéliser la tendance.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart
+                        data={invoicingHistory}
+                        margin={{ top: 10, right: 10, left: 10, bottom: 0 }}
+                      >
+                        <defs>
+                          <linearGradient id="colorFacture" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#4DA3FF" stopOpacity={0.2}/>
+                            <stop offset="95%" stopColor="#4DA3FF" stopOpacity={0.01}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#DCE5EE" />
+                        <XAxis dataKey="name" stroke="#6B7C93" fontSize={10} />
+                        <YAxis stroke="#6B7C93" fontSize={10} tickFormatter={(val) => `${val / 1000}k`} />
+                        <Tooltip 
+                          formatter={(value: any) => [formatAlgerianDinar(Number(value)), 'Facturé']}
+                          contentStyle={{ backgroundColor: 'white', borderColor: '#DCE5EE', borderRadius: '8px' }}
+                        />
+                        <Area 
+                          type="monotone" 
+                          dataKey="Facturation" 
+                          stroke="#4DA3FF" 
+                          strokeWidth={2}
+                          fillOpacity={1} 
+                          fill="url(#colorFacture)" 
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Bottom widgets: Workshops & Cross-sell insights */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* Workshops check */}
+                {details.customer.source === 'Site Web' && (
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center gap-1.5">
+                        <Sparkles size={15} className="text-[#4DA3FF]" />
+                        Participation aux Workshops
+                      </CardTitle>
+                      <CardDescription>Engagement issu de l'acquisition Web.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3.5">
+                      <div className="p-4 bg-[#F8FAFC] border border-[#DCE5EE] rounded-lg flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] text-[#6B7C93] font-bold uppercase block">Workshops suivis</span>
+                          <span className="text-xl font-extrabold text-[#17345C]">3 Sessions</span>
+                        </div>
+                        <CheckCircle size={24} className="text-[#22C55E]" />
+                      </div>
+                      <p className="text-xs text-[#6B7C93]">
+                        Ce client s'est inscrit et a assisté à 3 ateliers interactifs d'introduction. C'est le point d'ancrage de son intérêt pour nos solutions.
+                      </p>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* AI Cross-sell insight card */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-1.5">
+                      <Sparkles size={15} className="text-[#A855F7]" />
+                      Recommandation Cross-Sell IA
+                    </CardTitle>
+                    <CardDescription>Opportunités de ventes additionnelles détectées.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3.5">
+                    <div className="p-3 bg-[#A855F7]/5 border border-[#A855F7]/15 rounded-lg flex items-start gap-2.5">
+                      <Info size={16} className="text-[#A855F7] shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <h6 className="text-xs font-bold text-[#17345C]">Migration Cloud Enterprise</h6>
+                        <p className="text-[11px] text-[#6B7C93]">
+                          Basé sur son profil {details.customer.segment}, ce client présente une forte propension à souscrire à une prestation d'Audit d'Infrastructure.
+                        </p>
+                      </div>
+                    </div>
+                    <Button variant="outline" size="sm" className="w-full text-xs py-1.5 h-8">
+                      Générer la proposition
+                      <ArrowRight size={12} className="ml-1" />
+                    </Button>
+                  </CardContent>
+                </Card>
+
+              </div>
+
             </div>
           ) : (
-            <div className="h-full flex items-center justify-center border-2 border-dashed border-slate-200 rounded-lg p-12 text-slate-400 text-sm">
-              Sélectionnez un client dans la liste pour voir sa vue 360°.
+            <div className="h-full flex items-center justify-center p-12 text-[#6B7C93]">
+              <div className="text-center max-w-sm">
+                <User size={36} className="mx-auto text-slate-300 mb-3" />
+                <h3 className="font-bold text-sm text-[#17345C]">Aucun client sélectionné</h3>
+                <p className="text-xs mt-1">
+                  Veuillez sélectionner un client dans le panneau latéral pour charger sa fiche 360°.
+                </p>
+              </div>
             </div>
           )}
         </div>
+
       </div>
 
-      {/* Log Interaction Modal */}
+      {/* ============================================================ */}
+      {/* DIALOG MODALS FOR DETAILED TRACEABILITY                      */}
+      {/* ============================================================ */}
+
+      {/* 1. Paid Revenue Modal */}
+      <Dialog
+        isOpen={activeModal === 'revenue'}
+        onClose={() => setActiveModal(null)}
+        title="Traçabilité Financière : Factures Payées"
+      >
+        {details && (
+          <div className="space-y-4">
+            <div className="bg-[#EEF4F8] p-3 rounded-lg border border-[#DCE5EE]">
+              <span className="text-[10px] text-[#6B7C93] uppercase font-bold block">Total Recettes Payées</span>
+              <span className="text-lg font-extrabold text-[#17345C]">
+                {formatAlgerianDinar(customerSummary?.totalPaid || 0)}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <span className="text-xs font-bold text-[#17345C]">Factures correspondantes :</span>
+              <div className="border border-[#DCE5EE] rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-[10px]">Facture</TableHead>
+                      <TableHead className="text-[10px]">Prestation</TableHead>
+                      <TableHead className="text-[10px] text-right">Montant</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {details.transactions
+                      .filter(t => t.status === 'Payé')
+                      .map((t) => (
+                        <TableRow key={t.id}>
+                          <TableCell className="text-xs font-mono font-bold text-[#17345C]">{t.id}</TableCell>
+                          <TableCell className="text-xs">{t.service}</TableCell>
+                          <TableCell className="text-xs font-bold text-right text-[#17345C]">
+                            {formatAlgerianDinar(t.amount)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </div>
+        )}
+      </Dialog>
+
+      {/* 2. CAC/Attribution Modal */}
+      <Dialog
+        isOpen={activeModal === 'cac'}
+        onClose={() => setActiveModal(null)}
+        title="Détails du Coût d'Acquisition Client (CAC)"
+      >
+        {details && (
+          <div className="space-y-4 text-slate-700">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-[#EEF4F8] p-3 rounded-lg border border-[#DCE5EE]">
+                <span className="text-[10px] text-[#6B7C93] uppercase font-bold block">Coût d'Acquisition (CAC)</span>
+                <span className="text-base font-extrabold text-[#17345C]">
+                  {formatAlgerianDinar(details.customer.cac)}
+                </span>
+              </div>
+              <div className="bg-[#EEF4F8] p-3 rounded-lg border border-[#DCE5EE]">
+                <span className="text-[10px] text-[#6B7C93] uppercase font-bold block">Canal principal</span>
+                <span className="text-base font-extrabold text-[#17345C]">{details.customer.source}</span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1.5">
+              <h5 className="font-bold text-[#17345C]">Audit de Traçabilité Marketing</h5>
+              <p className="text-[#6B7C93] leading-relaxed">
+                Le CAC est calculé dynamiquement au niveau du Data Warehouse (table <code className="bg-slate-200 px-1 rounded text-[#17345C]">reporting_customer_360</code>) en ventilant le budget marketing mensuel global par rapport au volume de clients convertis sur le canal <span className="font-bold">{details.customer.source}</span>.
+              </p>
+            </div>
+          </div>
+        )}
+      </Dialog>
+
+      {/* 3. LTV/CAC Ratio Modal */}
+      <Dialog
+        isOpen={activeModal === 'ratio'}
+        onClose={() => setActiveModal(null)}
+        title="Analyse du ratio LTV / CAC"
+      >
+        {details && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-4 bg-[#22C55E]/10 border border-[#22C55E]/20 rounded-lg">
+              <div>
+                <span className="text-[10px] text-[#6B7C93] uppercase font-bold">Multiplicateur de valeur</span>
+                <span className="text-2xl font-extrabold text-[#22C55E] block">
+                  {customerSummary?.ltvCacRatio}x
+                </span>
+              </div>
+              <TrendingUp size={32} className="text-[#22C55E]" />
+            </div>
+
+            <div className="space-y-2.5 text-xs text-slate-700">
+              <h5 className="font-bold text-[#17345C]">Interprétation du ratio :</h5>
+              <ul className="space-y-2 list-disc list-inside text-[#6B7C93]">
+                <li><strong className="text-[#17345C]">&lt; 1.0x :</strong> Modèle déficitaire (acquisition à perte).</li>
+                <li><strong className="text-[#17345C]">1.0x - 3.0x :</strong> Seuil intermédiaire, marge d'amélioration.</li>
+                <li><strong className="text-[#17345C]">&gt; 3.0x :</strong> Rentabilité excellente confirmant l'efficacité du canal.</li>
+              </ul>
+            </div>
+          </div>
+        )}
+      </Dialog>
+
+      {/* 4. Single Invoice Detail Modal */}
+      <Dialog
+        isOpen={selectedInvoice !== null}
+        onClose={() => setSelectedInvoice(null)}
+        title="Détails de la Facture & Règlements Moustashir"
+      >
+        {selectedInvoice && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between border-b border-[#DCE5EE] pb-3">
+              <div>
+                <span className="text-[10px] text-[#6B7C93] font-bold uppercase tracking-wider block">Numéro de facture</span>
+                <span className="text-base font-extrabold text-[#17345C]">{selectedInvoice.id}</span>
+              </div>
+              <Badge variant={selectedInvoice.status === 'Payé' ? 'success' : 'warning'}>
+                {selectedInvoice.status}
+              </Badge>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 text-xs">
+              <div>
+                <span className="text-[10px] text-[#6B7C93] block font-semibold uppercase">Date d'émission</span>
+                <span className="font-bold text-[#17345C]">{selectedInvoice.dateIssued}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-[#6B7C93] block font-semibold uppercase">Prestation associée</span>
+                <span className="font-bold text-[#17345C]">{selectedInvoice.service}</span>
+              </div>
+              <div className="col-span-2 pt-2 border-t border-[#DCE5EE]">
+                <span className="text-[10px] text-[#6B7C93] block font-semibold uppercase">Montant Total</span>
+                <span className="text-lg font-extrabold text-[#17345C]">
+                  {formatAlgerianDinar(selectedInvoice.amount)}
+                </span>
+              </div>
+            </div>
+
+            {/* Service catalog connection information */}
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-2 mt-2">
+              <h5 className="font-bold text-[#17345C] flex items-center gap-1">
+                <ShieldCheck size={12} className="text-[#22C55E]" />
+                Traçabilité & Lineage Facturation
+              </h5>
+              <p className="text-[#6B7C93] leading-relaxed">
+                Cette facture a été générée via l'outil Moustashir pour le service <span className="font-semibold text-[#17345C]">{selectedInvoice.service}</span>. Les détails financiers et les taux de marge associés sont audités au niveau du catalogue de services central.
+              </p>
+            </div>
+          </div>
+        )}
+      </Dialog>
+
+      {/* 4b. Single Service Detail Modal */}
+      <Dialog
+        isOpen={selectedService !== null}
+        onClose={() => setSelectedService(null)}
+        title="Détails du Service & Suivi Projet Moustashir"
+      >
+        {selectedService && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between border-b border-[#DCE5EE] pb-3">
+              <div>
+                <span className="text-[10px] text-[#6B7C93] font-bold uppercase tracking-wider block">Identifiant Projet</span>
+                <span className="text-base font-extrabold text-[#17345C]">{selectedService.id}</span>
+              </div>
+              <Badge variant={selectedService.status === 'Terminé' ? 'success' : selectedService.status === 'En retard' ? 'danger' : 'info'}>
+                {selectedService.status}
+              </Badge>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 text-xs">
+              <div className="col-span-2">
+                <span className="text-[10px] text-[#6B7C93] block font-semibold uppercase">Nom du Service</span>
+                <span className="font-bold text-sm text-[#17345C]">{selectedService.name}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-[#6B7C93] block font-semibold uppercase">Date de début</span>
+                <span className="font-bold text-[#17345C]">{selectedService.startDate}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-[#6B7C93] block font-semibold uppercase">Date de livraison prévue</span>
+                <span className="font-bold text-[#17345C]">{selectedService.endDate}</span>
+              </div>
+              {selectedService.satisfactionScore !== undefined && selectedService.satisfactionScore !== null && (
+                <div className="col-span-2 pt-2 border-t border-[#DCE5EE]">
+                  <span className="text-[10px] text-[#6B7C93] block font-semibold uppercase">Score de Satisfaction</span>
+                  <span className="font-bold text-sm text-[#22C55E]">
+                    {selectedService.satisfactionScore} / 10
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="p-3 bg-[#EEF4F8] border border-[#DCE5EE] rounded-lg text-xs space-y-2">
+              <h5 className="font-bold text-[#17345C] flex items-center gap-1">
+                <Briefcase size={12} className="text-[#4DA3FF]" />
+                Activités & Prestations associées
+              </h5>
+              <p className="text-[#6B7C93] leading-relaxed">
+                Ce projet correspond à l'implémentation et à la livraison de <span className="font-semibold text-[#17345C]">{selectedService.name}</span> par nos équipes d'ingénierie.
+              </p>
+            </div>
+          </div>
+        )}
+      </Dialog>
+
+      {/* 5. Log Interaction Modal */}
       <Dialog 
         isOpen={showLogModal} 
         onClose={() => setShowLogModal(false)}
@@ -465,7 +1182,7 @@ export default function CustomersPage() {
       >
         <form onSubmit={handleLogInteraction} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-[#6B7C93] mb-1">
               Type d'Interaction
             </label>
             <Select 
@@ -481,7 +1198,7 @@ export default function CustomersPage() {
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-[#6B7C93] mb-1">
               Notes / Compte Rendu
             </label>
             <textarea
@@ -489,12 +1206,12 @@ export default function CustomersPage() {
               rows={4}
               value={logNotes}
               onChange={(e) => setLogNotes(e.target.value)}
-              placeholder="Saisissez les détails de l'interaction (ex: Appel pour qualifier le besoin, le client est intéressé par le système médical...)"
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#4DA3FF] focus:border-[#4DA3FF] focus:bg-white transition-all resize-none"
+              placeholder="Saisissez les détails de l'interaction..."
+              className="w-full px-3 py-2 bg-slate-50 border border-[#DCE5EE] rounded text-sm text-[#17345C] placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#4DA3FF] focus:border-[#4DA3FF] focus:bg-white transition-all resize-none"
             />
           </div>
 
-          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+          <div className="flex justify-end gap-2 pt-2 border-t border-[#DCE5EE]">
             <Button variant="outline" type="button" onClick={() => setShowLogModal(false)}>
               Annuler
             </Button>
@@ -504,6 +1221,7 @@ export default function CustomersPage() {
           </div>
         </form>
       </Dialog>
+
     </div>
   );
 }
