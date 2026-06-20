@@ -1,0 +1,134 @@
+[
+  {
+    "service_id": "S001",
+    "family": "Branding",
+    "service_name": "Branding Basic",
+    "tier": "Basic",
+    "dev_price_da": 73000,
+    "hosting_price_da_year": 0,
+    "maintenance_price_da_year": 0,
+    "margin_rate": 0.65,
+    "recommended_segment": "micro"
+  },
+  {
+    "service_id": "S002",
+    "family": "Branding",
+    "service_name": "Branding Pro",
+    "tier": "Pro",
+    "dev_price_da": 113000,
+    "hosting_price_da_year": 0,
+    "maintenance_price_da_year": 0,
+    "margin_rate": 0.65,
+    "recommended_segment": "sme"
+  },
+  {
+    "service_id": "S003",
+    "family": "Branding",
+    "service_name": "Branding Entreprise",
+    "tier": "Entreprise",
+    "dev_price_da": 183000,
+    "hosting_price_da_year": 0,
+    "maintenance_price_da_year": 0,
+    "margin_rate": 0.65,
+    "recommended_segment": "corporate"
+  },
+  {
+    "service_id": "S004",
+    "family": "Marketing",
+    "service_name": "Strategie Marketing",
+    "tier": "Standard",
+    "dev_price_da": 119000,
+    "hosting_price_da_year": 0,
+    "maintenance_price_da_year": 0,
+    "margin_rate": 0.7,
+    "recommended_segment": "sme"
+  },
+  {
+    "service_id": "S005",
+    "family": "Web",
+    "service_name": "Landing Page",
+    "tier": "Basic",
+    "dev_price_da": 28000,
+    "hosting_price_da_year": 8000,
+    "maintenance_price_da_year": 30000,
+    "margin_rate": 0.55,
+    "recommended_segment": "micro"
+  },
+  {
+    "service_id": "S006",
+    "family": "Web",
+    "service_name": "Site Vitrine",
+    "tier": "Pro",
+    "dev_price_da": 56000,
+    "hosting_price_da_year": 10000,
+    "maintenance_price_da_year": 60000,
+    "margin_rate": 0.55,
+    "recommended_segment": "sme"
+  },
+  {
+    "service_id": "S007",
+    "family": "Web",
+    "service_name": "Corporate Website",
+    "tier": "Entreprise",
+    "dev_price_da": 120000,
+    "hosting_price_da_year": 14000,
+    "maintenance_price_da_year": 60000,
+    "margin_rate": 0.55,
+    "recommended_segment": "corporate"
+  },
+  {
+    "service_id": "S008",
+    "family": "Web",
+    "service_name": "E-Commerce Website",
+    "tier": "Pro",
+    "dev_price_da": 160000,
+    "hosting_price_da_year": 10000,
+    "maintenance_price_da_year": 60000,
+    "margin_rate": 0.55,
+    "recommended_segment": "ecommerce"
+  },
+  {
+    "service_id": "S009",
+    "family": "Web",
+    "service_name": "E-Learning Platform",
+    "tier": "Pro",
+    "dev_price_da": 160000,
+    "hosting_price_da_year": 10000,
+    "maintenance_price_da_year": 60000,
+    "margin_rate": 0.55,
+    "recommended_segment": "education"
+  },
+  {
+    "service_id": "S010",
+    "family": "Custom",
+    "service_name": "Medical Center Management",
+    "tier": "Pro",
+    "dev_price_da": 520000,
+    "hosting_price_da_year": 45000,
+    "maintenance_price_da_year": 120000,
+    "margin_rate": 0.45,
+    "recommended_segment": "clinic"
+  },
+  {
+    "service_id": "S011",
+    "family": "Custom",
+    "service_name": "Marketplace Full Package",
+    "tier": "Pro",
+    "dev_price_da": 1260000,
+    "hosting_price_da_year": 65000,
+    "maintenance_price_da_year": 120000,
+    "margin_rate": 0.45,
+    "recommended_segment": "marketplace"
+  },
+  {
+    "service_id": "S012",
+    "family": "Mobile",
+    "service_name": "Appointment Booking App",
+    "tier": "Basic",
+    "dev_price_da": 200000,
+    "hosting_price_da_year": 25000,
+    "maintenance_price_da_year": 60000,
+    "margin_rate": 0.45,
+    "recommended_segment": "service_provider"
+  }
+]

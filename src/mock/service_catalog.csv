@@ -1,0 +1,13 @@
+service_id,family,service_name,tier,dev_price_da,hosting_price_da_year,maintenance_price_da_year,margin_rate,recommended_segment
+S001,Branding,Branding Basic,Basic,73000,0,0,0.65,micro
+S002,Branding,Branding Pro,Pro,113000,0,0,0.65,sme
+S003,Branding,Branding Entreprise,Entreprise,183000,0,0,0.65,corporate
+S004,Marketing,Strategie Marketing,Standard,119000,0,0,0.7,sme
+S005,Web,Landing Page,Basic,28000,8000,30000,0.55,micro
+S006,Web,Site Vitrine,Pro,56000,10000,60000,0.55,sme
+S007,Web,Corporate Website,Entreprise,120000,14000,60000,0.55,corporate
+S008,Web,E-Commerce Website,Pro,160000,10000,60000,0.55,ecommerce
+S009,Web,E-Learning Platform,Pro,160000,10000,60000,0.55,education
+S010,Custom,Medical Center Management,Pro,520000,45000,120000,0.45,clinic
+S011,Custom,Marketplace Full Package,Pro,1260000,65000,120000,0.45,marketplace
+S012,Mobile,Appointment Booking App,Basic,200000,25000,60000,0.45,service_provider

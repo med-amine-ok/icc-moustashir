@@ -1,0 +1,18 @@
+[
+  {
+    "channel_key": "CH01",
+    "channel_name": "website"
+  },
+  {
+    "channel_key": "CH02",
+    "channel_name": "marketing"
+  },
+  {
+    "channel_key": "CH03",
+    "channel_name": "event"
+  },
+  {
+    "channel_key": "CH04",
+    "channel_name": "outbound"
+  }
+]

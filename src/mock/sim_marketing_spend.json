@@ -1,0 +1,38 @@
+[
+  {
+    "month": "2026-02",
+    "channel": "marketing_ads",
+    "simulated_spend_da": 250000,
+    "observed_leads": 465,
+    "simulated_conversion_rate": 0.06,
+    "simulated_clients_won": 28,
+    "simulated_cac_da": 8929
+  },
+  {
+    "month": "2026-02",
+    "channel": "event",
+    "simulated_spend_da": 180000,
+    "observed_leads": 531,
+    "simulated_conversion_rate": 0.04,
+    "simulated_clients_won": 21,
+    "simulated_cac_da": 8571
+  },
+  {
+    "month": "2026-02",
+    "channel": "website",
+    "simulated_spend_da": 75000,
+    "observed_leads": 1510,
+    "simulated_conversion_rate": 0.02,
+    "simulated_clients_won": 30,
+    "simulated_cac_da": 2500
+  },
+  {
+    "month": "2026-02",
+    "channel": "outbound",
+    "simulated_spend_da": 120000,
+    "observed_leads": 210,
+    "simulated_conversion_rate": 0.08,
+    "simulated_clients_won": 17,
+    "simulated_cac_da": 7059
+  }
+]

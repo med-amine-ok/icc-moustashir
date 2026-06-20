@@ -1,0 +1,5 @@
+month,channel,simulated_spend_da,observed_leads,simulated_conversion_rate,simulated_clients_won,simulated_cac_da
+2026-02,marketing_ads,250000,465,0.06,28,8929
+2026-02,event,180000,531,0.04,21,8571
+2026-02,website,75000,1510,0.02,30,2500
+2026-02,outbound,120000,210,0.08,17,7059
